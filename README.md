@@ -1,0 +1,139 @@
+# hardening-checker
+
+A Python tool that checks the security configuration of a Linux system. It only reads, it never changes anything. It runs 20 checks covering SSH, permissions on critical files, user accounts, kernel parameters, insecure services and the firewall, suggests a fix command for every problem, and gives the system a hardening score from 0 to 100. The checks are loosely based on CIS Benchmark recommendations.
+
+All it reads are config files and the result of `systemctl is-active`. A few checks (`/etc/shadow`, for example) need `sudo`; without it they are reported as `SKIP`.
+
+## Checks
+
+| Category | IDs | What is checked |
+|---|---|---|
+| SSH | SSH-001..005 | `PermitRootLogin`, `PasswordAuthentication`, `PermitEmptyPasswords`, `X11Forwarding`, `MaxAuthTries` |
+| File permissions | FILE-001..005 | `/etc/passwd`, `/etc/shadow`, `/etc/group`, `/etc/gshadow`, `sshd_config` (mode and owner) |
+| Users | USR-001..003 | extra accounts with UID 0, accounts with empty passwords, password age (`PASS_MAX_DAYS`) |
+| Kernel | SYS-001..005 | `ip_forward`, `tcp_syncookies`, `accept_redirects`, `icmp_echo_ignore_broadcasts`, ASLR |
+| Services | SVC-001 | telnet, rsh, rlogin, vsftpd, tftpd, xinetd and ypserv are not running |
+| Firewall | FW-001 | `ufw`, `firewalld` or `nftables` is active |
+
+## How it behaves
+
+- The `sshd_config` parser works the way sshd does: the first value that is set wins, `Include` (drop-in files) is followed, and `Match` blocks are ignored.
+- Every result has a status (PASS, FAIL, WARN or SKIP), a severity, a detail line and a fix command.
+- The score is weighted by severity (critical, high, medium, low).
+- Output goes to a colored terminal, and optionally to JSON and an HTML report.
+- `--fail-on` makes it usable in CI: the exit code is 2 if there is a FAIL at that severity or above.
+- `--root` points it at a fake filesystem, so you can try it out without touching the real system.
+
+## Install
+
+```bash
+git clone https://github.com/faridtagizada/hardening-checker.git
+cd hardening-checker
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Python 3.8+ on Linux. The tool itself has no dependencies; `requirements.txt` only lists `pytest` for the tests.
+
+## Usage
+
+```bash
+# check your own system (use sudo for the full result)
+sudo python -m hardening_checker
+
+# only the SSH and file checks
+python -m hardening_checker --only SSH,FILE
+
+# JSON and HTML reports
+sudo python -m hardening_checker --json report.json --html report.html
+
+# for CI: exit with code 2 if there is a high or critical FAIL
+python -m hardening_checker --fail-on high
+
+# demo: a deliberately weak fake system
+python samples/make_demo_root.py /tmp/demo_insecure
+python -m hardening_checker --root /tmp/demo_insecure
+```
+
+| Option | Description |
+|---|---|
+| `--root` | Filesystem root (default `/`) |
+| `--only` | Filter by ID prefix, e.g. `SSH,USR` |
+| `--json` / `--html` | Write report files |
+| `--fail-on` | `low`, `medium`, `high` or `critical` |
+| `--no-color` | Plain output |
+
+Output on the weak demo system (SSH and USR checks only):
+
+```
+[FAIL] SSH-001  Root SSH login is disabled
+           ↳ root can log in directly over SSH
+           ✎ Fix: PermitRootLogin no
+[FAIL] SSH-002  SSH password authentication is disabled
+           ↳ Password login is enabled
+           ✎ Fix: PasswordAuthentication no (set up an SSH key first!)
+[FAIL] SSH-003  Empty passwords are not allowed
+           ↳ Accounts with empty passwords can log in
+           ✎ Fix: PermitEmptyPasswords no
+[WARN] SSH-004  X11 forwarding is disabled
+           ↳ X11Forwarding yes
+           ✎ Fix: X11Forwarding no
+[WARN] SSH-005  MaxAuthTries ≤ 4
+           ↳ MaxAuthTries=10
+           ✎ Fix: MaxAuthTries 3
+[FAIL] USR-001  Only root has UID 0
+           ↳ Extra accounts with UID 0: toor
+           ✎ Fix: Delete these accounts or change their UID: sudo usermod -u <new> <name>
+[FAIL] USR-002  No accounts with empty passwords
+           ↳ Accounts with empty passwords: guest
+           ✎ Fix: sudo passwd -l <name>  (lock it) or set a password
+[WARN] USR-003  Maximum password age ≤ 90 days
+           ↳ PASS_MAX_DAYS=99999
+           ✎ Fix: /etc/login.defs: PASS_MAX_DAYS 90
+
+Result: 0 PASS, 5 FAIL, 3 WARN, 0 SKIP
+Hardening score: 11/100
+```
+
+## Layout
+
+```
+hardening-checker/
+├── hardening_checker/
+│   ├── models.py          # Result, Context, scoring
+│   ├── ssh_checks.py      # sshd_config parser and the SSH checks
+│   ├── file_checks.py     # file permissions
+│   ├── user_checks.py     # accounts and password policy
+│   ├── system_checks.py   # sysctl, services, firewall
+│   ├── runner.py          # runs the checks
+│   ├── report.py          # terminal / JSON / HTML
+│   └── cli.py
+├── samples/make_demo_root.py
+└── tests/test_checks.py
+```
+
+## Tests
+
+```bash
+pytest -v
+```
+
+9 tests. They use weak and secure fake filesystems generated by `samples/make_demo_root.py` and a fake `systemctl` runner, so they don't depend on the machine they run on.
+
+## Limitations
+
+- Only the standard Debian/Ubuntu paths (`/etc/ssh/sshd_config`, `/etc/login.defs`).
+- The firewall check only looks at whether the service is active, not at the rules.
+- It covers the basics and is not a replacement for the full CIS Benchmark.
+- Containers usually have no `systemd`, so the service and firewall checks come out as `SKIP`.
+
+## TODO
+
+- more checks (`auditd`, `fail2ban`, automatic updates, world-writable files)
+- configure the checks with YAML
+- a `--fix` mode (automatic fixes, with confirmation)
+- Markdown report
+
+## License
+
+MIT
