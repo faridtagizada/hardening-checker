@@ -10,8 +10,10 @@ permissions:
 
 jobs:
   tests:
-    runs-on: ubuntu-latest
+    # ubuntu-latest (26.04) has no Python 3.9 build any more; 24.04 still has the old and the new one
+    runs-on: ubuntu-24.04
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.9", "3.13"]
     steps:

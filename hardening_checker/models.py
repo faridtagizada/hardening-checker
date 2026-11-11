@@ -39,8 +39,12 @@ class Context:
 
     def __init__(self, root: str = "/", runner: Optional[Callable] = None):
         self.root = root
-        # realpath, so that "//" or a symlink to "/" still counts as the real system
-        self.is_real = os.path.realpath(root) == "/"
+        # samefile, so that "//" or a symlink to "/" still counts as the real system
+        # (realpath("//") only becomes "/" from Python 3.13 on)
+        try:
+            self.is_real = os.path.samefile(root, "/")
+        except OSError:
+            self.is_real = False
         if runner is None:
             runner = default_runner if self.is_real else (lambda cmd: None)
         self.runner = runner
