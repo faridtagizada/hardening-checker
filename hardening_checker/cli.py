@@ -2,9 +2,10 @@
 import argparse
 import os
 import sys
+from typing import Callable, List
 
 from . import __version__
-from .models import Context, FAIL, SEVERITIES
+from .models import Context, FAIL, SEVERITIES, Result
 from .report import print_report, save_html, save_json
 from .runner import run_all
 
@@ -24,24 +25,49 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _write_report(save: Callable[[List[Result], str], None], results: List[Result],
+                  path: str, label: str) -> bool:
+    """Writes one report file (creating its directory). Returns False instead of raising."""
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        save(results, path)
+    except OSError as exc:
+        print(f"Error: could not write the {label} report to {path}: {exc}", file=sys.stderr)
+        return False
+    print(f"[+] {label} written: {path}")
+    return True
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    for stream in (sys.stdout, sys.stderr):
+        # the report uses "≤", "↳" and "✎": a terminal that cannot encode them must not crash the run
+        try:
+            stream.reconfigure(errors="replace")    # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            pass
     if not os.path.isdir(args.root):
         print(f"Error: directory not found: {args.root}", file=sys.stderr)
         return 1
-    only = [x.strip().upper() for x in args.only.split(",")] if args.only else None
+    only = None
+    if args.only is not None:
+        only = [x.strip().upper() for x in args.only.split(",") if x.strip()]
+        if not only:
+            print("Error: --only needs at least one ID prefix, e.g. SSH,FILE", file=sys.stderr)
+            return 1
     results = run_all(Context(args.root), only)
     if not results:
         print("Error: no checks were selected", file=sys.stderr)
         return 1
 
     print_report(results, color=sys.stdout.isatty() and not args.no_color)
+    written = True
     if args.json:
-        save_json(results, args.json)
-        print(f"[+] JSON written: {args.json}")
+        written = _write_report(save_json, results, args.json, "JSON") and written
     if args.html:
-        save_html(results, args.html)
-        print(f"[+] HTML written: {args.html}")
+        written = _write_report(save_html, results, args.html, "HTML") and written
+    if not written:
+        return 1
 
     if args.fail_on:
         limit = SEVERITIES[args.fail_on]
