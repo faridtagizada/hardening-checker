@@ -3,7 +3,7 @@ import html
 import json
 from collections import Counter
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 from .models import Result, compute_score, PASS, FAIL, WARN, SKIP
 
@@ -15,6 +15,11 @@ def summary(results: List[Result]) -> dict:
     c = Counter(r.status for r in results)
     return {"pass": c[PASS], "fail": c[FAIL], "warn": c[WARN], "skip": c[SKIP],
             "total": len(results), "score": compute_score(results)}
+
+
+def score_text(score: Optional[int]) -> str:
+    """0/100 would look like a terrible system when in fact nothing could be evaluated."""
+    return "n/a (no check could be evaluated)" if score is None else f"{score}/100"
 
 
 def print_report(results: List[Result], color: bool = True) -> None:
@@ -30,7 +35,7 @@ def print_report(results: List[Result], color: bool = True) -> None:
             print(f"           ✎ Fix: {r.remediation}")
     s = summary(results)
     print(f"\nResult: {s['pass']} PASS, {s['fail']} FAIL, {s['warn']} WARN, {s['skip']} SKIP")
-    print(f"Hardening score: {s['score']}/100")
+    print(f"Hardening score: {score_text(s['score'])}")
 
 
 def save_json(results: List[Result], path: str) -> None:
@@ -65,7 +70,7 @@ tr.skip td:nth-child(2){{color:#888}}
 <h1>Linux Hardening Report</h1>
 <p>Date: {datetime.now():%Y-%m-%d %H:%M} &nbsp;|&nbsp;
 PASS {s['pass']} · FAIL {s['fail']} · WARN {s['warn']} · SKIP {s['skip']}</p>
-<p class="score">Score: {s['score']}/100</p>
+<p class="score">Score: {score_text(s['score'])}</p>
 <table><tr><th>ID</th><th>Status</th><th>Severity</th><th>Check</th><th>Details</th><th>Fix</th></tr>
 {''.join(rows)}
 </table></body></html>"""

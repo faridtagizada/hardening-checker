@@ -39,7 +39,12 @@ class Context:
 
     def __init__(self, root: str = "/", runner: Optional[Callable] = None):
         self.root = root
-        self.is_real = os.path.abspath(root) == "/"
+        # samefile, so that "//" or a symlink to "/" still counts as the real system
+        # (realpath("//") only becomes "/" from Python 3.13 on)
+        try:
+            self.is_real = os.path.samefile(root, "/")
+        except OSError:
+            self.is_real = False
         if runner is None:
             runner = default_runner if self.is_real else (lambda cmd: None)
         self.runner = runner
@@ -58,8 +63,11 @@ class Context:
         return self.runner(cmd)
 
 
-def compute_score(results: List[Result]) -> int:
-    """Weighted score: PASS counts fully, WARN counts half, FAIL counts zero; SKIP is ignored."""
+def compute_score(results: List[Result]) -> Optional[int]:
+    """Weighted score: PASS counts fully, WARN counts half, FAIL counts zero; SKIP is ignored.
+
+    Returns None when nothing was evaluated (every selected check was skipped).
+    """
     total = earned = 0.0
     for r in results:
         if r.status == SKIP:
@@ -70,4 +78,4 @@ def compute_score(results: List[Result]) -> int:
             earned += w
         elif r.status == WARN:
             earned += w / 2
-    return round(100 * earned / total) if total else 0
+    return round(100 * earned / total) if total else None
