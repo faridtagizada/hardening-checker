@@ -30,8 +30,9 @@ def make_root(root: str, secure: bool = False) -> str:
         w("etc/group", "root:x:0:\n", 0o644)
         w("etc/gshadow", "root:*::\n", 0o640)
         w("etc/login.defs", "PASS_MAX_DAYS   90\n")
+        w("etc/ufw/ufw.conf", "ENABLED=yes\nLOGLEVEL=low\n")
         sysctl = {"net/ipv4/ip_forward": "0", "net/ipv4/tcp_syncookies": "1",
-                  "net/ipv4/conf/all/accept_redirects": "0",
+                  "net/ipv4/conf/all/accept_redirects": "0", "net/ipv4/conf/default/accept_redirects": "0",
                   "net/ipv4/icmp_echo_ignore_broadcasts": "1", "kernel/randomize_va_space": "2"}
     else:
         # The drop-in file is read first and the first value wins (the "no" in the main file doesn't count)
@@ -44,8 +45,10 @@ def make_root(root: str, secure: bool = False) -> str:
         w("etc/group", "root:x:0:\n", 0o666)
         w("etc/gshadow", "root:*::\n", 0o644)
         w("etc/login.defs", "PASS_MAX_DAYS   99999\n")
+        # ufw is installed and its service runs, but the firewall itself is off (fresh Ubuntu)
+        w("etc/ufw/ufw.conf", "ENABLED=no\nLOGLEVEL=low\n")
         sysctl = {"net/ipv4/ip_forward": "1", "net/ipv4/tcp_syncookies": "0",
-                  "net/ipv4/conf/all/accept_redirects": "1",
+                  "net/ipv4/conf/all/accept_redirects": "1", "net/ipv4/conf/default/accept_redirects": "1",
                   "net/ipv4/icmp_echo_ignore_broadcasts": "0", "kernel/randomize_va_space": "0"}
     for rel, val in sysctl.items():
         w("proc/sys/" + rel, val + "\n")

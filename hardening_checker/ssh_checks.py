@@ -57,12 +57,22 @@ def run(ctx: Context) -> List[Result]:
     out.append(Result("SSH-001", "Root SSH login is disabled", st, "high", d, "PermitRootLogin no"))
 
     v = cfg.get("passwordauthentication", "").lower()
-    if v == "no":
-        st, d = PASS, "Password login is disabled (key-based login)"
-    else:
+    # With UsePAM yes, keyboard-interactive asks for the Unix password through PAM, so
+    # passwords still work even with PasswordAuthentication no. sshd defaults:
+    # KbdInteractiveAuthentication yes (old name: ChallengeResponseAuthentication), UsePAM no.
+    kbd = (cfg.get("kbdinteractiveauthentication") or cfg.get("challengeresponseauthentication") or "yes").lower()
+    use_pam = cfg.get("usepam", "no").lower()
+    methods = cfg.get("authenticationmethods", "any").lower()
+    kbd_allowed = methods == "any" or "keyboard-interactive" in methods
+    fix = "PasswordAuthentication no (set up an SSH key first!)"
+    if v != "no":
         st, d = FAIL, "Password login is enabled" + ("" if v else " (default: yes)")
-    out.append(Result("SSH-002", "SSH password authentication is disabled", st, "high", d,
-                      "PasswordAuthentication no (set up an SSH key first!)"))
+    elif kbd == "yes" and use_pam == "yes" and kbd_allowed:
+        st, d = FAIL, "PasswordAuthentication no, but KbdInteractiveAuthentication yes + UsePAM yes still accept passwords"
+        fix = "KbdInteractiveAuthentication no"
+    else:
+        st, d = PASS, "Password login is disabled (key-based login)"
+    out.append(Result("SSH-002", "SSH password authentication is disabled", st, "high", d, fix))
 
     v = cfg.get("permitemptypasswords", "").lower()
     st = FAIL if v == "yes" else PASS

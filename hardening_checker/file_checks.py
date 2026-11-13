@@ -14,10 +14,22 @@ FILES = [
 ]
 
 
+def _describe_bits(bits: int) -> str:
+    """0o004 -> 'others read', 0o022 -> 'group write, others write'"""
+    parts = []
+    for shift, who in ((6, "owner"), (3, "group"), (0, "others")):
+        rights = [name for bit, name in ((4, "read"), (2, "write"), (1, "execute")) if (bits >> shift) & bit]
+        if rights:
+            parts.append(f"{who} {'+'.join(rights)}")
+    return ", ".join(parts)
+
+
 def run(ctx: Context) -> List[Result]:
     out: List[Result] = []
     for cid, path, max_mode, fail_status, sev in FILES:
-        title = f"{path} permissions ≤ {max_mode:o}"
+        # The check is bitwise, not "smaller number": 604 is below 640 but lets
+        # everyone read the file. So the text names the extra permission bits.
+        title = f"{path} permissions within {max_mode:03o}"
         try:
             st = os.stat(ctx.path(path))
         except OSError:
@@ -25,8 +37,10 @@ def run(ctx: Context) -> List[Result]:
             continue
         mode = st.st_mode & 0o777
         problems = []
-        if mode & ~max_mode:
-            problems.append(f"mode {mode:o}, should be ≤ {max_mode:o}")
+        extra = mode & ~max_mode
+        if extra:
+            problems.append(f"mode {mode:03o} has permission bits that {max_mode:03o} doesn't allow "
+                            f"({_describe_bits(extra)})")
         if ctx.is_real and st.st_uid != 0:
             problems.append(f"owner is not root (uid={st.st_uid})")
         if problems:
