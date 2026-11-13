@@ -94,3 +94,55 @@ def test_cli_reports_and_exit_codes(insecure, secure, tmp_path):
 
 def test_cli_bad_root():
     assert main(["--root", "/no/such/directory"]) == 1
+
+
+def test_ufw_service_running_but_ufw_disabled(insecure, secure):
+    # ufw.service is "active (exited)" even when "ufw status" says inactive
+    r = by_id(run_all(Context(insecure, fake_runner(active={"ufw"}))))
+    assert r["FW-001"].status == "WARN"
+    assert "ENABLED=no" in r["FW-001"].detail
+    assert by_id(run_all(Context(secure, fake_runner(active={"ufw"}))))["FW-001"].status == "PASS"
+
+
+def test_firewalld_does_not_need_ufw_conf(insecure):
+    assert by_id(run_all(Context(insecure, fake_runner(active={"firewalld"}))))["FW-001"].status == "PASS"
+
+
+def test_accept_redirects_default_is_checked(secure):
+    with open(os.path.join(secure, "proc/sys/net/ipv4/conf/default/accept_redirects"), "w") as f:
+        f.write("1\n")
+    r = by_id(run_all(Context(secure, fake_runner(active={"ufw"}))))["SYS-003"]
+    assert r.status == "FAIL"
+    assert "default.accept_redirects=1" in r.detail
+
+
+def write_sshd(tmp_path, text):
+    p = tmp_path / "etc" / "ssh"
+    p.mkdir(parents=True)
+    (p / "sshd_config").write_text(text)
+    return by_id(run_all(Context(str(tmp_path)), only=["SSH"]))
+
+
+def test_passwords_through_pam_keyboard_interactive(tmp_path):
+    r = write_sshd(tmp_path, "PasswordAuthentication no\nUsePAM yes\n")   # KbdInteractive defaults to yes
+    assert r["SSH-002"].status == "FAIL"
+    assert r["SSH-002"].remediation == "KbdInteractiveAuthentication no"
+
+
+@pytest.mark.parametrize("extra", ["KbdInteractiveAuthentication no\n", "ChallengeResponseAuthentication no\n",
+                                   "AuthenticationMethods publickey\n", ""])
+def test_keyboard_interactive_off_is_fine(tmp_path, extra):
+    use_pam = "UsePAM yes\n" if extra else "UsePAM no\n"
+    r = write_sshd(tmp_path, "PasswordAuthentication no\n" + use_pam + extra)
+    assert r["SSH-002"].status == "PASS"
+
+
+def test_permission_message_names_the_extra_bits(tmp_path):
+    # 604 is a smaller number than 640, but "others read" is not allowed
+    (tmp_path / "etc").mkdir()
+    shadow = tmp_path / "etc" / "shadow"
+    shadow.write_text("root:*:19000:0:99999:7:::\n")
+    os.chmod(shadow, 0o604)
+    r = by_id(run_all(Context(str(tmp_path)), only=["FILE-002"]))["FILE-002"]
+    assert r.status == "FAIL"
+    assert "others read" in r.detail and "≤" not in r.detail
