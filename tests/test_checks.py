@@ -287,3 +287,10 @@ def test_demo_script_takes_options_in_any_order(tmp_path):
     subprocess.run([sys.executable, script, "--secure", str(target)], check=True, capture_output=True, cwd=tmp_path)
     assert (target / "etc" / "passwd").exists() and not (tmp_path / "--secure").exists()
     assert {r.status for r in run_all(Context(str(target)), only=["SSH", "USR"])} == {"PASS"}
+
+
+def test_version_flag_is_capital_v(capsys):
+    from hardening_checker import __version__
+    with pytest.raises(SystemExit):
+        main(["-V"])
+    assert capsys.readouterr().out.strip() == __version__

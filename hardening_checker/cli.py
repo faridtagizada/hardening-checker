@@ -24,7 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--fail-on", choices=list(SEVERITIES),
                    help=f"Exit with code {EXIT_FINDINGS} if there is a FAIL at this severity or higher (for CI)")
     p.add_argument("--no-color", action="store_true", help="Disable colored output")
-    p.add_argument("-v", "--version", action="version", version=__version__)
+    p.add_argument("-V", "--version", action="version", version=__version__)  # -v usually means "verbose"
     return p
 
 
