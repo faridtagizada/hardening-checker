@@ -26,4 +26,4 @@ jobs:
       - name: Tests
         run: python -m pytest -q
       - name: flake8
-        run: flake8 --max-line-length 130 hardening_checker tests samples
+        run: flake8 hardening_checker tests samples

@@ -1,6 +1,6 @@
 # hardening-checker
 
-A Python tool that checks the security configuration of a Linux system. It only reads, it never changes anything. It runs 20 checks covering SSH, permissions on critical files, user accounts, kernel parameters, insecure services and the firewall, suggests a fix command for every problem, and gives the system a hardening score from 0 to 100. The checks are loosely based on CIS Benchmark recommendations.
+A Python tool that checks the security configuration of a Linux system. It only reads, it never changes anything. It runs 21 checks covering SSH, permissions on critical files, user accounts, kernel parameters, insecure services and the firewall, suggests a fix command for every problem, and gives the system a hardening score from 0 to 100. The checks are loosely based on CIS Benchmark recommendations.
 
 All it reads are config files and the result of `systemctl is-active`. A few checks (`/etc/shadow`, for example) need `sudo`; without it they are reported as `SKIP`.
 
@@ -8,9 +8,9 @@ All it reads are config files and the result of `systemctl is-active`. A few che
 
 | Category | IDs | What is checked |
 |---|---|---|
-| SSH | SSH-001..005 | `PermitRootLogin`, `PasswordAuthentication` (and `KbdInteractiveAuthentication`), `PermitEmptyPasswords`, `X11Forwarding`, `MaxAuthTries` |
-| File permissions | FILE-001..005 | `/etc/passwd`, `/etc/shadow`, `/etc/group`, `/etc/gshadow`, `sshd_config` (mode and owner; for `shadow` and `gshadow` also the group) |
-| Users | USR-001..003 | extra accounts with UID 0, accounts with empty passwords, password age (`PASS_MAX_DAYS`) |
+| SSH | SSH-001..005 | `PermitRootLogin`, `PasswordAuthentication` (and `KbdInteractiveAuthentication` with `UsePAM`), `PermitEmptyPasswords`, `X11Forwarding`, `MaxAuthTries` |
+| File permissions | FILE-001..005 | `/etc/passwd`, `/etc/shadow`, `/etc/group`, `/etc/gshadow`, `sshd_config` (mode and owner; for `shadow` and `gshadow` also the group). The limit is a set of permission bits, so `604` fails a `640` limit: it is a smaller number, but everyone can read the file |
+| Users | USR-001..004 | extra accounts with UID 0, accounts with empty passwords, password age: `PASS_MAX_DAYS` in `login.defs` (only used for accounts created later) and each existing account's maximum in `/etc/shadow` |
 | Kernel | SYS-001..005 | `ip_forward`, `tcp_syncookies`, `accept_redirects` (every interface, plus the IPv6 defaults), `icmp_echo_ignore_broadcasts`, ASLR |
 | Services | SVC-001 | telnet, rsh, rlogin, vsftpd, tftpd, xinetd and ypserv are not running |
 | Firewall | FW-001 | `ufw` (running and really enabled), `firewalld`, `nftables`, `netfilter-persistent` or `iptables` is active |
@@ -23,8 +23,18 @@ All it reads are config files and the result of `systemctl is-active`. A few che
 - Every result has a status (PASS, FAIL, WARN or SKIP), a severity, a detail line and a fix command.
 - The score is weighted by severity (critical, high, medium, low).
 - Output goes to a colored terminal, and optionally to JSON and an HTML report.
-- `--fail-on` makes it usable in CI: the exit code is 2 if there is a FAIL at that severity or above.
+- `--fail-on` makes it usable in CI: the exit code is 3 if there is a FAIL at that severity or above.
 - `--root` points it at a fake filesystem, so you can try it out without touching the real system.
+- `--only` also decides what runs: with `--only SSH` no `systemctl` command is started at all.
+
+Exit codes:
+
+| Code | Meaning |
+|---|---|
+| 0 | The checks ran (and nothing reached the `--fail-on` level) |
+| 1 | The run went wrong: `--root` doesn't exist, no check was selected, or a report could not be written |
+| 2 | Bad command-line arguments |
+| 3 | `--fail-on`: there is a FAIL at that severity or above |
 
 ## Install
 
@@ -35,7 +45,9 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Python 3.8+ on Linux. The tool itself has no dependencies; `requirements.txt` only lists `pytest` for the tests.
+Python 3.9 or newer on Linux. The tool itself has no dependencies; `requirements.txt` only lists `pytest` for the tests.
+
+`pip install .` also installs a `hardening-checker` command. sudo does not see a venv, so run that one as `sudo .venv/bin/hardening-checker`.
 
 ## Usage
 
@@ -44,17 +56,17 @@ Python 3.8+ on Linux. The tool itself has no dependencies; `requirements.txt` on
 sudo python3 -m hardening_checker
 
 # only the SSH and file checks
-python -m hardening_checker --only SSH,FILE
+python3 -m hardening_checker --only SSH,FILE
 
 # JSON and HTML reports
 sudo python3 -m hardening_checker --json report.json --html report.html
 
-# for CI: exit with code 2 if there is a high or critical FAIL
-python -m hardening_checker --fail-on high
+# for CI: exit with code 3 if there is a high or critical FAIL
+python3 -m hardening_checker --fail-on high
 
 # demo: a deliberately weak fake system
-python samples/make_demo_root.py /tmp/demo_insecure
-python -m hardening_checker --root /tmp/demo_insecure
+python3 samples/make_demo_root.py /tmp/demo_insecure
+python3 -m hardening_checker --root /tmp/demo_insecure
 ```
 
 | Option | Description |
@@ -91,10 +103,13 @@ Output on the weak demo system (SSH and USR checks only):
            ✎ Fix: sudo passwd -l <name>  (lock it) or set a password
 [WARN] USR-003  Maximum password age ≤ 90 days
            ↳ PASS_MAX_DAYS=99999
-           ✎ Fix: /etc/login.defs: PASS_MAX_DAYS 90
+           ✎ Fix: /etc/login.defs: PASS_MAX_DAYS 90  (only for accounts created later; existing ones: see USR-004)
+[WARN] USR-004  Existing passwords expire within 90 days
+           ↳ Maximum password age not set or above 90 days: ali
+           ✎ Fix: sudo chage -M 90 <name>  (for each account listed)
 
-Result: 0 PASS, 5 FAIL, 3 WARN, 0 SKIP
-Hardening score: 11/100
+Result: 0 PASS, 5 FAIL, 4 WARN, 0 SKIP
+Hardening score: 14/100
 ```
 
 ## Layout
@@ -111,7 +126,9 @@ hardening-checker/
 │   ├── report.py          # terminal / JSON / HTML
 │   └── cli.py
 ├── samples/make_demo_root.py
-└── tests/test_checks.py
+├── tests/test_checks.py
+├── pyproject.toml         # pip install . / the hardening-checker command
+└── .flake8
 ```
 
 ## Tests
@@ -120,7 +137,7 @@ hardening-checker/
 pytest -v
 ```
 
-22 tests. They use weak and secure fake filesystems generated by `samples/make_demo_root.py` and a fake `systemctl` runner, so they don't depend on the machine they run on.
+31 tests. They use weak and secure fake filesystems generated by `samples/make_demo_root.py` and a fake `systemctl` runner, so they don't depend on the machine they run on.
 
 ## Limitations
 

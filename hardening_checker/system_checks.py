@@ -38,7 +38,7 @@ def _ufw_enabled(ctx: Context) -> Optional[bool]:
     text = ctx.read("/etc/ufw/ufw.conf")
     if text is None:
         return None
-    m = re.search(r"^\s*ENABLED\s*=\s*(\w+)", text, re.MULTILINE | re.IGNORECASE)
+    m = re.search(r"^\s*ENABLED\s*=\s*[\"']?(\w+)", text, re.MULTILINE | re.IGNORECASE)
     return m.group(1).lower() == "yes" if m else None
 
 
@@ -63,6 +63,15 @@ def _redirect_settings(ctx: Context) -> Dict[str, str]:
     return found
 
 
+def _redirect_sysctl(name: str) -> str:
+    """'eth0' -> net.ipv4.conf.eth0.accept_redirects=0, 'ipv6.all' -> net.ipv6.conf.all.accept_redirects=0"""
+    family = "ipv4"
+    if name.startswith("ipv6."):
+        family, name = "ipv6", name[len("ipv6."):]
+    # sysctl writes a dot inside an interface name (a VLAN such as eth0.100) as a slash
+    return f"net.{family}.conf.{name.replace('.', '/')}.accept_redirects=0"
+
+
 def _check_redirects(ctx: Context) -> Result:
     cid, title, sev = "SYS-003", "ICMP redirects are not accepted", "medium"
     found = _redirect_settings(ctx)
@@ -72,41 +81,48 @@ def _check_redirects(ctx: Context) -> Result:
     if bad:
         return Result(cid, title, FAIL, sev,
                       "accept_redirects is not 0 for: " + ", ".join(bad),
-                      "sudo sysctl -w net.ipv4.conf.all.accept_redirects=0 net.ipv4.conf.default.accept_redirects=0"
-                      "  (also each interface listed; persistent: /etc/sysctl.d/99-hardening.conf)")
+                      "sudo sysctl -w " + " ".join(_redirect_sysctl(name) for name in bad)
+                      + "  (persistent: /etc/sysctl.d/99-hardening.conf)")
     return Result(cid, title, PASS, sev, f"accept_redirects=0 ({len(found)} entries checked)")
 
 
 def run(ctx: Context) -> List[Result]:
     out: List[Result] = []
 
-    for cid, rel, accepted, title, fail_status, sev, fix in SYSCTLS:
-        text = ctx.read("/proc/sys/" + rel)
-        if text is None:
-            out.append(Result(cid, title, SKIP, sev, "Parameter is not readable"))
-        elif text.strip() in accepted:
-            out.append(Result(cid, title, PASS, sev, f"{rel.replace('/', '.')}={text.strip()}"))
-        else:
-            out.append(Result(cid, title, fail_status, sev,
-                              f"{rel.replace('/', '.')}={text.strip()}, should be {accepted[0]}",
-                              f"sudo sysctl -w {fix}  (persistent: /etc/sysctl.d/99-hardening.conf)"))
-    out.append(_check_redirects(ctx))
-    out.sort(key=lambda r: r.check_id)
+    if ctx.wanted("SYS"):
+        for cid, rel, accepted, title, fail_status, sev, fix in SYSCTLS:
+            text = ctx.read("/proc/sys/" + rel)
+            if text is None:
+                out.append(Result(cid, title, SKIP, sev, "Parameter is not readable"))
+            elif text.strip() in accepted:
+                out.append(Result(cid, title, PASS, sev, f"{rel.replace('/', '.')}={text.strip()}"))
+            else:
+                out.append(Result(cid, title, fail_status, sev,
+                                  f"{rel.replace('/', '.')}={text.strip()}, should be {accepted[0]}",
+                                  f"sudo sysctl -w {fix}  (persistent: /etc/sysctl.d/99-hardening.conf)"))
+        out.append(_check_redirects(ctx))
+        out.sort(key=lambda r: r.check_id)
 
+    # The service and firewall checks call systemctl, so they only run when --only can keep their result
+    if not ctx.wanted("SVC", "FW"):
+        return out
     if not _systemd_available(ctx):
         out.append(Result("SVC-001", "Insecure services are not running", SKIP, "high", "systemd is not available"))
         out.append(Result("FW-001", "Firewall is active", SKIP, "high", "systemd is not available"))
         return out
 
-    active = [s for s in INSECURE_SERVICES if _is_active(ctx, s)]
-    if active:
-        out.append(Result("SVC-001", "Insecure services are not running", FAIL, "high",
-                          "Active: " + ", ".join(active),
-                          "sudo systemctl disable --now " + " ".join(active)))
-    else:
-        out.append(Result("SVC-001", "Insecure services are not running", PASS, "high",
-                          "telnet, rsh, vsftpd etc. are not active"))
+    if ctx.wanted("SVC"):
+        active = [s for s in INSECURE_SERVICES if _is_active(ctx, s)]
+        if active:
+            out.append(Result("SVC-001", "Insecure services are not running", FAIL, "high",
+                              "Active: " + ", ".join(active),
+                              "sudo systemctl disable --now " + " ".join(active)))
+        else:
+            out.append(Result("SVC-001", "Insecure services are not running", PASS, "high",
+                              "telnet, rsh, vsftpd etc. are not active"))
 
+    if not ctx.wanted("FW"):
+        return out
     fw: List[str] = []
     note = ""
     for service in FIREWALL_SERVICES:

@@ -16,10 +16,11 @@ CHECKS = [
 def run_all(ctx: Context, only: Optional[List[str]] = None) -> List[Result]:
     """only: list of ID prefixes (e.g. ['SSH', 'FILE']); None or empty = everything."""
     prefixes = [p.strip().upper() for p in (only or []) if p and p.strip()]
+    ctx.only = prefixes
     results: List[Result] = []
     for ids, fn in CHECKS:
         # don't run a module when none of its IDs can match the filter
-        if prefixes and not any(i.startswith(p) or p.startswith(i) for i in ids for p in prefixes):
+        if not ctx.wanted(*ids):
             continue
         results.extend(fn(ctx))
     if prefixes:

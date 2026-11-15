@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hardening-checker"
+dynamic = ["version"]
+description = "Read-only security configuration checker for Linux"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Fərid Tağızadə" }]
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+hardening-checker = "hardening_checker.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/faridtagizada/hardening-checker"
+
+[tool.setuptools]
+packages = ["hardening_checker"]
+
+[tool.setuptools.dynamic]
+version = { attr = "hardening_checker.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

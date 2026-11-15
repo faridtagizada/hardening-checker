@@ -26,9 +26,8 @@ def _clean_value(value: str) -> str:
     for token in TOKEN_RE.findall(value):
         if token.startswith("#"):
             break
-        if len(token) >= 2 and token[0] == token[-1] == '"':
-            token = token[1:-1]
-        out.append(token)
+        quoted = len(token) >= 2 and token[0] == token[-1] == '"'
+        out.append(token[1:-1] if quoted else token)
     return " ".join(out)
 
 
@@ -58,9 +57,8 @@ def _parse_file(ctx: Context, path: str, conf: SshdConfig, depth: int = 0) -> No
                 conf.match.append((criteria, key, value))
             continue
         if key == "include":
-            for pattern in value.split():
-                if not os.path.isabs(pattern):
-                    pattern = os.path.join("/etc/ssh", pattern)
+            for item in value.split():
+                pattern = item if os.path.isabs(item) else os.path.join("/etc/ssh", item)
                 for fpath in sorted(glob.glob(ctx.path(pattern))):
                     rel = "/" + os.path.relpath(fpath, ctx.root)
                     _parse_file(ctx, rel, conf, depth + 1)
@@ -110,15 +108,23 @@ def run(ctx: Context) -> List[Result]:
     out.append(Result("SSH-001", "Root SSH login is disabled", st, "high", d, "PermitRootLogin no"))
 
     v = cfg.get("passwordauthentication", "").lower()
-    kbd = (cfg.get("kbdinteractiveauthentication") or cfg.get("challengeresponseauthentication") or "").lower()
+    # With UsePAM yes, keyboard-interactive login asks for the Unix password through PAM, so a password
+    # can still work with PasswordAuthentication no. sshd defaults: KbdInteractiveAuthentication yes
+    # (old name: ChallengeResponseAuthentication) and UsePAM no; Ubuntu sets UsePAM yes.
+    kbd = (cfg.get("kbdinteractiveauthentication") or cfg.get("challengeresponseauthentication") or "yes").lower()
+    use_pam = cfg.get("usepam", "no").lower()
+    methods = cfg.get("authenticationmethods", "any").lower()
+    kbd_possible = kbd == "yes" and use_pam == "yes" and (methods == "any" or "keyboard-interactive" in methods)
     fix = "PasswordAuthentication no (set up an SSH key first!)"
-    if v == "no" and kbd == "yes":
-        st, d = WARN, "PasswordAuthentication no, but KbdInteractiveAuthentication yes: with PAM, passwords may still be accepted"
-        fix = "KbdInteractiveAuthentication no (unless you need it, e.g. for 2FA)"
-    elif v == "no":
-        st, d = PASS, "Password login is disabled (key-based login)"
-    else:
+    if v != "no":
         st, d = FAIL, "Password login is enabled" + ("" if v else " (default: yes)")
+    elif kbd_possible:
+        st, d = WARN, ("PasswordAuthentication no, but KbdInteractiveAuthentication yes"
+                       + ("" if cfg.get("kbdinteractiveauthentication") else " (default)")
+                       + " and UsePAM yes: PAM can still ask for the password")
+        fix = "KbdInteractiveAuthentication no (unless you need it, e.g. for 2FA)"
+    else:
+        st, d = PASS, "Password login is disabled (key-based login)"
     st, d = _match_override(conf, "passwordauthentication", ("yes",), st, d)
     out.append(Result("SSH-002", "SSH password authentication is disabled", st, "high", d, fix))
 

@@ -22,10 +22,21 @@ def _group_name(gid: int) -> str:
         return str(gid)
 
 
+def _describe_bits(bits: int) -> str:
+    """0o004 -> 'others read', 0o022 -> 'group write, others write'"""
+    parts = []
+    for shift, who in ((6, "owner"), (3, "group"), (0, "others")):
+        rights = [name for bit, name in ((4, "read"), (2, "write"), (1, "execute")) if (bits >> shift) & bit]
+        if rights:
+            parts.append(f"{who} {'+'.join(rights)}")
+    return ", ".join(parts)
+
+
 def run(ctx: Context) -> List[Result]:
     out: List[Result] = []
     for cid, path, max_mode, fail_status, sev, groups in FILES:
-        title = f"{path} permissions ≤ {max_mode:o}"
+        # The limit is bitwise, not "a smaller number": 604 is below 640 but lets everyone read the file
+        title = f"{path} permissions within {max_mode:03o}"
         try:
             st = os.stat(ctx.path(path))
         except OSError:
@@ -34,8 +45,9 @@ def run(ctx: Context) -> List[Result]:
         mode = st.st_mode & 0o777
         problems = []
         fix = f"sudo chmod {max_mode:o} {path} && sudo chown root {path}"
-        if mode & ~max_mode:
-            problems.append(f"mode {mode:o}, should be ≤ {max_mode:o}")
+        extra = mode & ~max_mode
+        if extra:
+            problems.append(f"mode {mode:03o} has permissions that {max_mode:03o} doesn't allow ({_describe_bits(extra)})")
         if ctx.is_real and st.st_uid != 0:
             problems.append(f"owner is not root (uid={st.st_uid})")
         # mode 640 is only as good as the group: any member of that group can read the password hashes
@@ -45,5 +57,5 @@ def run(ctx: Context) -> List[Result]:
         if problems:
             out.append(Result(cid, title, fail_status, sev, "; ".join(problems), fix))
         else:
-            out.append(Result(cid, title, PASS, sev, f"mode {mode:o}"))
+            out.append(Result(cid, title, PASS, sev, f"mode {mode:03o}"))
     return out

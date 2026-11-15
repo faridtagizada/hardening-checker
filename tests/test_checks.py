@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import sys
 
 import pytest
@@ -102,9 +103,17 @@ def test_ssh_unreadable_include_is_not_a_pass(tmp_path):
     assert ssh_results(Context(root))["SSH-002"].status == "FAIL"    # root sees the real value
 
 
-def test_ssh_keyboard_interactive_keeps_passwords_possible(tmp_path):
-    root = ssh_root(tmp_path, "PasswordAuthentication no\nKbdInteractiveAuthentication yes\n")
-    assert ssh_results(Context(root))["SSH-002"].status == "WARN"
+@pytest.mark.parametrize("conf, status", [
+    ("PasswordAuthentication no\nKbdInteractiveAuthentication yes\nUsePAM yes\n", "WARN"),
+    ("PasswordAuthentication no\nUsePAM yes\n", "WARN"),                      # KbdInteractive defaults to yes
+    ("PasswordAuthentication no\nChallengeResponseAuthentication yes\nUsePAM yes\n", "WARN"),   # the old name
+    ("PasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM yes\n", "PASS"),      # stock Ubuntu
+    ("PasswordAuthentication no\nKbdInteractiveAuthentication yes\n", "PASS"),  # UsePAM defaults to no
+    ("PasswordAuthentication no\nUsePAM yes\nAuthenticationMethods publickey\n", "PASS"),
+])
+def test_ssh_keyboard_interactive_keeps_passwords_possible(tmp_path, conf, status):
+    root = ssh_root(tmp_path, conf)
+    assert ssh_results(Context(root))["SSH-002"].status == status
 
 
 def test_insecure_findings(insecure):
@@ -112,7 +121,7 @@ def test_insecure_findings(insecure):
     for cid in ["SSH-001", "SSH-002", "SSH-003", "FILE-001", "FILE-002", "FILE-004",
                 "USR-001", "USR-002", "SYS-002", "SYS-003", "SYS-005", "SVC-001"]:
         assert r[cid].status == "FAIL", cid
-    for cid in ["SSH-004", "SSH-005", "USR-003", "SYS-001", "FILE-005", "FW-001"]:
+    for cid in ["SSH-004", "SSH-005", "USR-003", "USR-004", "SYS-001", "FILE-005", "FW-001"]:
         assert r[cid].status == "WARN", cid
 
 
@@ -134,6 +143,9 @@ def test_ufw_service_active_but_firewall_disabled(secure):
     r = by_id(run_all(Context(secure, fake_runner(active={"ufw"}))))
     assert r["FW-001"].status == "WARN" and "switched off" in r["FW-001"].detail
     with open(conf, "w") as f:
+        f.write('ENABLED="no"\n')         # the file is shell syntax, so the value may be quoted
+    assert by_id(run_all(Context(secure, fake_runner(active={"ufw"}))))["FW-001"].status == "WARN"
+    with open(conf, "w") as f:
         f.write("ENABLED=yes\n")
     assert by_id(run_all(Context(secure, fake_runner(active={"ufw"}))))["FW-001"].status == "PASS"
 
@@ -151,6 +163,7 @@ def test_accept_redirects_checks_every_interface(secure):
     set_iface("eth0", "1")          # conf/all = 0 is not enough when the interface itself says 1
     r = by_id(run_all(Context(secure), only=["SYS"]))["SYS-003"]
     assert r.status == "FAIL" and "eth0" in r.detail
+    assert "net.ipv4.conf.eth0.accept_redirects=0" in r.remediation     # the fix names the interface
 
 
 def test_syncookies_2_is_enabled_too(secure):
@@ -172,6 +185,26 @@ def test_password_that_never_expires(secure):
     assert by_id(run_all(Context(secure), only=["USR"]))["USR-003"].status == "WARN"
 
 
+def test_existing_accounts_are_checked_in_shadow(secure):
+    # login.defs says 90, but that only applies to accounts created later
+    shadow = os.path.join(secure, "etc", "shadow")
+    assert by_id(run_all(Context(secure), only=["USR"]))["USR-004"].status == "PASS"
+    with open(shadow, "w") as f:
+        f.write("root:$6$abc:19000:0:90:7:::\nali:$6$def:19000:0:::::\nold:$6$x:19000:0:365:7:::\n"
+                "daemon:*:19000:0:99999:7:::\nlocked:!$6$y:19000:0:99999:7:::\n")
+    r = by_id(run_all(Context(secure), only=["USR"]))["USR-004"]
+    assert r.status == "WARN" and r.detail.endswith("ali, old")      # locked accounts don't count
+    os.chmod(shadow, 0)
+    if os.geteuid() != 0:                                               # root can read it anyway
+        assert by_id(run_all(Context(secure), only=["USR"]))["USR-004"].status == "SKIP"
+
+
+def test_permission_limit_is_bitwise(secure):
+    os.chmod(os.path.join(secure, "etc", "shadow"), 0o604)    # a smaller number than 640, but world-readable
+    r = by_id(run_all(Context(secure), only=["FILE"]))["FILE-002"]
+    assert r.status == "FAIL" and "others read" in r.detail
+
+
 def test_skip_when_files_missing(tmp_path):
     results = by_id(run_all(Context(str(tmp_path))))
     assert results["SSH-000"].status == "SKIP"
@@ -182,6 +215,22 @@ def test_skip_when_files_missing(tmp_path):
 def test_only_filter(secure):
     results = run_all(Context(secure), only=["SSH"])
     assert results and all(r.check_id.startswith("SSH") for r in results)
+
+
+def test_only_filter_skips_the_commands_it_would_throw_away(secure):
+    calls = []
+    runner = fake_runner(active={"ufw"})
+
+    def recording_runner(cmd):
+        calls.append(cmd)
+        return runner(cmd)
+
+    results = run_all(Context(secure, recording_runner), only=["FW"])
+    assert [r.check_id for r in results] == ["FW-001"]
+    assert not any(cmd[-1] in ("telnetd", "vsftpd") for cmd in calls)    # no SVC-001 lookups
+    calls.clear()
+    run_all(Context(secure, recording_runner), only=["SSH"])
+    assert calls == []
 
 
 def test_only_filter_ignores_empty_prefixes(secure, capsys):
@@ -203,11 +252,14 @@ def test_score_is_not_zero_when_everything_is_skipped(tmp_path, capsys):
 
 def test_cli_reports_and_exit_codes(insecure, secure, tmp_path):
     j, h = tmp_path / "r.json", tmp_path / "r.html"
-    assert main(["--root", insecure, "--json", str(j), "--html", str(h), "--fail-on", "high"]) == 2
+    assert main(["--root", insecure, "--json", str(j), "--html", str(h), "--fail-on", "high"]) == 3
     data = json.loads(j.read_text())
     assert data["summary"]["fail"] > 0
     assert "<table>" in h.read_text()
     assert main(["--root", secure, "--fail-on", "low"]) == 0
+    with pytest.raises(SystemExit) as bad_argument:                  # a usage error keeps argparse's 2
+        main(["--fail-on", "everything"])
+    assert bad_argument.value.code == 2
 
 
 def test_report_directory_is_created_and_write_errors_are_reported(secure, tmp_path, capsys):
@@ -226,3 +278,12 @@ def test_cli_bad_root():
 
 def test_double_slash_root_is_the_real_system():
     assert Context("//").is_real
+
+
+def test_demo_script_takes_options_in_any_order(tmp_path):
+    script = os.path.join(ROOT, "samples", "make_demo_root.py")
+    target = tmp_path / "demo"
+    # the old script took the first argument as the directory and created ./--secure
+    subprocess.run([sys.executable, script, "--secure", str(target)], check=True, capture_output=True, cwd=tmp_path)
+    assert (target / "etc" / "passwd").exists() and not (tmp_path / "--secure").exists()
+    assert {r.status for r in run_all(Context(str(target)), only=["SSH", "USR"])} == {"PASS"}

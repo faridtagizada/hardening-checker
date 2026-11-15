@@ -24,7 +24,7 @@ class Result:
 def default_runner(cmd: List[str]) -> Optional[Tuple[int, str]]:
     """Runs a command. Returns None if the command isn't found or errors out."""
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False)
     except (OSError, subprocess.TimeoutExpired):
         return None
     return p.returncode, p.stdout.strip()
@@ -48,6 +48,11 @@ class Context:
         if runner is None:
             runner = default_runner if self.is_real else (lambda cmd: None)
         self.runner = runner
+        self.only: List[str] = []       # the --only ID prefixes; empty = every check
+
+    def wanted(self, *ids: str) -> bool:
+        """True if the --only filter can match a check whose ID starts with one of ids."""
+        return not self.only or any(i.startswith(p) or p.startswith(i) for i in ids for p in self.only)
 
     def path(self, p: str) -> str:
         return os.path.join(self.root, p.lstrip("/"))

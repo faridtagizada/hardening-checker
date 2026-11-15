@@ -9,6 +9,9 @@ from .models import Context, FAIL, SEVERITIES, Result
 from .report import print_report, save_html, save_json
 from .runner import run_all
 
+# 1 = the run itself went wrong, 2 = bad arguments (argparse), so a finding needs its own code
+EXIT_FINDINGS = 3
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -19,7 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", metavar="FILE", help="Write a JSON report")
     p.add_argument("--html", metavar="FILE", help="Write an HTML report")
     p.add_argument("--fail-on", choices=list(SEVERITIES),
-                   help="Exit with code 2 if there is a FAIL at this severity or higher (for CI)")
+                   help=f"Exit with code {EXIT_FINDINGS} if there is a FAIL at this severity or higher (for CI)")
     p.add_argument("--no-color", action="store_true", help="Disable colored output")
     p.add_argument("-v", "--version", action="version", version=__version__)
     return p
@@ -72,7 +75,7 @@ def main(argv=None) -> int:
     if args.fail_on:
         limit = SEVERITIES[args.fail_on]
         if any(r.status == FAIL and SEVERITIES[r.severity] >= limit for r in results):
-            return 2
+            return EXIT_FINDINGS
     return 0
 
 
