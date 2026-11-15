@@ -24,7 +24,7 @@ class Result:
 def default_runner(cmd: List[str]) -> Optional[Tuple[int, str]]:
     """Runs a command. Returns None if the command isn't found or errors out."""
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False)
     except (OSError, subprocess.TimeoutExpired):
         return None
     return p.returncode, p.stdout.strip()
@@ -39,10 +39,20 @@ class Context:
 
     def __init__(self, root: str = "/", runner: Optional[Callable] = None):
         self.root = root
-        self.is_real = os.path.abspath(root) == "/"
+        # samefile, so that "//" or a symlink to "/" still counts as the real system
+        # (realpath("//") only becomes "/" from Python 3.13 on)
+        try:
+            self.is_real = os.path.samefile(root, "/")
+        except OSError:
+            self.is_real = False
         if runner is None:
             runner = default_runner if self.is_real else (lambda cmd: None)
         self.runner = runner
+        self.only: List[str] = []       # the --only ID prefixes; empty = every check
+
+    def wanted(self, *ids: str) -> bool:
+        """True if the --only filter can match a check whose ID starts with one of ids."""
+        return not self.only or any(i.startswith(p) or p.startswith(i) for i in ids for p in self.only)
 
     def path(self, p: str) -> str:
         return os.path.join(self.root, p.lstrip("/"))
@@ -58,8 +68,11 @@ class Context:
         return self.runner(cmd)
 
 
-def compute_score(results: List[Result]) -> int:
-    """Weighted score: PASS counts fully, WARN counts half, FAIL counts zero; SKIP is ignored."""
+def compute_score(results: List[Result]) -> Optional[int]:
+    """Weighted score: PASS counts fully, WARN counts half, FAIL counts zero; SKIP is ignored.
+
+    Returns None when nothing was evaluated (every selected check was skipped).
+    """
     total = earned = 0.0
     for r in results:
         if r.status == SKIP:
@@ -70,4 +83,4 @@ def compute_score(results: List[Result]) -> int:
             earned += w
         elif r.status == WARN:
             earned += w / 2
-    return round(100 * earned / total) if total else 0
+    return round(100 * earned / total) if total else None

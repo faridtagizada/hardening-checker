@@ -1,12 +1,12 @@
 """Creates a fake filesystem root for demos and tests.
 
 Usage:
-    python samples/make_demo_root.py /tmp/demo_insecure
-    python samples/make_demo_root.py /tmp/demo_secure --secure
-    python -m hardening_checker --root /tmp/demo_insecure
+    python3 samples/make_demo_root.py /tmp/demo_insecure
+    python3 samples/make_demo_root.py /tmp/demo_secure --secure
+    python3 -m hardening_checker --root /tmp/demo_insecure
 """
+import argparse
 import os
-import sys
 
 
 def make_root(root: str, secure: bool = False) -> str:
@@ -40,7 +40,9 @@ def make_root(root: str, secure: bool = False) -> str:
           "PermitEmptyPasswords yes\nX11Forwarding yes\nMaxAuthTries 10\n", 0o644)
         w("etc/ssh/sshd_config.d/50-cloud.conf", "PasswordAuthentication yes\n")
         w("etc/passwd", base_passwd + "toor:x:0:0::/root:/bin/bash\n", 0o666)
-        w("etc/shadow", base_shadow + "guest::19000:0:99999:7:::\n", 0o644)
+        # ali's password never has to be changed (99999 days), guest has no password at all
+        w("etc/shadow", "root:$6$abc:19000:0:90:7:::\nali:$6$def:19000:0:99999:7:::\nguest::19000:0:99999:7:::\n",
+          0o644)
         w("etc/group", "root:x:0:\n", 0o666)
         w("etc/gshadow", "root:*::\n", 0o644)
         w("etc/login.defs", "PASS_MAX_DAYS   99999\n")
@@ -53,7 +55,9 @@ def make_root(root: str, secure: bool = False) -> str:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        sys.exit("Usage: make_demo_root.py <directory> [--secure]")
-    make_root(sys.argv[1], secure="--secure" in sys.argv)
-    print(f"Created: {sys.argv[1]}")
+    parser = argparse.ArgumentParser(description="Creates a fake filesystem root for hardening_checker --root")
+    parser.add_argument("directory", help="where to create it")
+    parser.add_argument("--secure", action="store_true", help="a well-configured system instead of a weak one")
+    args = parser.parse_args()
+    make_root(args.directory, secure=args.secure)
+    print(f"Created: {args.directory}")
